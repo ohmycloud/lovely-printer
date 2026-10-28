@@ -1,5 +1,6 @@
 pub mod api;
 pub mod inspiration;
+pub mod random_content;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -66,6 +67,7 @@ pub struct Printer {
     pub pool: SqlitePool,
     events: broadcast::Sender<PrinterEvent>,
     pub inspiration: Arc<dyn inspiration::InspirationProvider>,
+    pub random_content: Arc<random_content::RandomContentService>,
 }
 
 impl Printer {
@@ -85,10 +87,15 @@ impl Printer {
 
     pub fn new(pool: SqlitePool) -> Self {
         let (events, _) = broadcast::channel(256);
+        let inspiration = inspiration::configured_provider();
+        let random_content = Arc::new(random_content::RandomContentService::configured(
+            inspiration.clone(),
+        ));
         Self {
             pool,
             events,
-            inspiration: inspiration::configured_provider(),
+            inspiration,
+            random_content,
         }
     }
 

@@ -39,6 +39,9 @@ enum Command {
     Inspire {
         #[arg(long, default_value = "love", value_parser = ["love", "poetry", "lyrics"])]
         kind: String,
+        /// Lyrics search term (default: 海阔天空).
+        #[arg(long, default_value = "海阔天空")]
+        query: String,
         #[arg(long)]
         print: bool,
         #[arg(long, env = "PRINTER_URL", default_value = "http://127.0.0.1:3000")]
@@ -110,12 +113,14 @@ async fn main() -> Result<()> {
         }
         Command::Inspire {
             kind,
+            query,
             print,
             server,
         } => {
             let server = server.trim_end_matches('/');
             let response = client
-                .get(format!("{server}/api/inspire?kind={kind}"))
+                .get(format!("{server}/api/print/random"))
+                .query(&[("type", &kind), ("q", &query)])
                 .send()
                 .await?;
             let status = response.status();
@@ -123,24 +128,23 @@ async fn main() -> Result<()> {
             if !status.is_success() {
                 return Err(format!("{status}: {message}").into());
             }
+            let item: lovely_printer::random_content::RandomContent =
+                serde_json::from_value(message)?;
             if print {
-                let text = message["text"]
-                    .as_str()
-                    .ok_or("Provider returned no text")?
-                    .to_string();
+                let text = item.print_text();
                 output(
                     client
                         .post(format!("{server}/api/print"))
                         .json(&PrintRequest {
                             text,
-                            source: format!("cli:{kind}"),
+                            source: format!("cli:{}", item.source),
                         })
                         .send()
                         .await?,
                 )
                 .await?;
             } else {
-                println!("{}", message["text"].as_str().unwrap_or_default());
+                println!("{}", item.print_text());
             }
         }
     }

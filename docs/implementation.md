@@ -22,8 +22,10 @@
 3. 不沿用原站写死的机身高度估算。测量真实打印机顶边与纸张高度，使纸张从正确位置出纸。
 4. 长纸张会等比缩小，以确保整张纸留在可见画布中；超长内容的易读全文可以在历史面板查看。这是可见性与物理尺寸之间的明确取舍。
 5. 加入历史、设置、静音、连接状态、键盘快捷键、触屏拖动和减少动画选项，保持机身正面布局简洁。
-6. 不冒用 Gemini 服务标识。默认离线生成原创情话、原创短歌词与公版古诗；可通过后端适配任意文本生成 API。
+6. 不冒用 Gemini 服务标识。情话默认本地生成；诗词接 RDDH，歌词接 LRCLIB，统一由 Rust 数据层归一化。第三方不可用时用如实标注来源的本地备用。
 7. 不复制原站无法完全显示的欢迎便签问题。欢迎便签是临时引导，不占用真实打印历史。
+8. 点击或聚焦便签不显示红色虚线边框，键盘焦点仅轻微增加阴影。便签正文基准保持 14px，按最新反馈将输入屏幕从 23.52px 缩小为 20px；响应式布局仍会对机身或超长纸张整体缩放。
+9. 设置增加独立的主题配色标签：奶油复古、晴空蓝（参考浅蓝机身／深蓝屏幕）、鼠尾草绿。语义色变量覆盖机身、按钮、屏幕、便签、背景、页眉页脚。九项颜色和四项文案可编辑；便签 Header 的 `{id}` 由实际编号替换，现有／新增便签同时更新，原始打印文字不改写。颜色覆盖按主题保存，可恢复当前主题默认值。
 
 ## 架构
 
@@ -36,9 +38,18 @@ Axum handlers ── Printer::print (统一验证及打印命令)
                        ├── SQLx → SQLite WAL → 持久化便签
                        └── broadcast → SSE → 网页打印队列
 
-InspirationProvider
-        ├── LocalProvider（离线随机、避免连续重复）
-        └── HttpProvider（远程 API，8 秒超时，失败回退）
+Web / CLI → GET /api/print/random?type=poetry|lyrics|love&q=...
+                      │
+             RandomContentService
+       请求 → 清洗 → 去重 → 缓存 → 换行
+          ├── RDDH → 诗词字段映射
+          ├── LRCLIB → 歌词字段映射与片段
+          ├── InspirationProvider → 本地／自定义情话
+          └── 上游失败 → 缓存旧内容／本地备用
+                      │
+       { type, title, author, content, source }
+                      │
+              预览 → POST /api/print
 ```
 
 ### 代码位置
@@ -47,14 +58,18 @@ InspirationProvider
 |---|---|
 | `src/lib.rs` | 打印服务、请求与便签类型、SQLx 数据访问、事件 |
 | `src/api.rs` | Axum 路由、静态资源、SSE、JSON 错误处理 |
-| `src/inspiration.rs` | 可替换的灵感来源接口与本地／远程实现 |
+| `src/inspiration.rs` | 本地／自定义情话提供者；兼容旧接口类型 |
+| `src/random_content.rs` | 第三方适配、统一数据模型、清洗、去重、缓存和换行 |
 | `src/main.rs` | 启动服务、CLI 子命令 |
 | `migrations/0001_notes.sql` | 自动执行的数据库迁移 |
 | `static/index.html` | 打印机、画布、历史与设置面板 |
 | `static/app.css` | 外观、字体、阴影、响应式样式 |
 | `static/app.js` | 表单、动画、打印队列、拖动、SSE 同步 |
 | `static/audio.js` | Web Audio 合成、自定义音频解码、IndexedDB |
+| `static/themes.js` | 三套主题、语义颜色、自定义项验证与应用 |
+| `static/select.js` | 固定向下展开的自定义下拉框，Popover 顶层定位、键盘和焦点管理 |
 | `tests/printer.rs` | Rust 服务与 HTTP 集成测试 |
+| `tests/random_content.rs` | 本地 mock 上游测试：字段映射、缓存、去重、回退和统一 GET 契约 |
 | `tests/browser/printer.spec.js` | 浏览器端到端测试 |
 
 ### 持久化和同步约定
@@ -113,7 +128,8 @@ Content-Type: application/json
 | GET | `/api/notes?limit=20&offset=0` | 历史，按 seq 倒序；limit 1–100 |
 | GET | `/api/notes?archived=false` | 筛选仍在桌面的便签；省略 archived 则返回全部 |
 | PATCH | `/api/notes/{id}` | 更新 `x`、`y`、`z_index`、`archived`，均可选；坐标必须成对提供 |
-| GET | `/api/inspire?kind=love` | 灵感；kind 可选 `love`、`poetry`、`lyrics`；不自动打印 |
+| GET | `/api/print/random?type=poetry` | 统一随机内容；type 默认 poetry，可选 love / lyrics；歌词 q 默认海阔天空；不自动打印 |
+| GET | `/api/inspire?kind=love` | 旧兼容接口，仍返回 text/provider，内部复用统一数据层 |
 | GET | `/api/events` | SSE：`sync`、`printed`、`updated`；15 秒保活 |
 
 坐标范围为 0–100000 的有限数；z_index 为 1–2000000000 的整数。
@@ -124,7 +140,20 @@ Content-Type: application/json
 NOTE_PROVIDER_URL=https://your-service.example/generate cargo run -- serve
 ```
 
-服务端向该地址 POST `{"kind":"poetry"}`，对方返回 `{"text":"生成的文字"}`。生成文本会验证长度、空白和控制字符，失败时返回本地内容。API 密钥不要写入前端；需要特殊鉴权、流式响应或不同响应结构时，在 `InspirationProvider` 后增加适配器即可，打印代码不变。
+服务端仅对情话向该地址 POST `{"kind":"love"}`，对方返回 `{"text":"生成的文字"}`。生成文本会验证长度、空白和控制字符，失败时返回本地内容。诗词／歌词分别使用 `POETRY_API_URL` / `LYRICS_API_URL` 可选镜像地址，固定附加标准参数。API 密钥不要写入前端。
+
+### 第三方数据规范化与缓存
+
+统一输出恰好五个字段：`type`、`title`、`author`、`content`、`source`。标题／作者来自上游，不臆造作者；空作者设为「佚名」或「未知歌手」。`GET /api/print/random` 无写库／打印副作用；打印前用统一 `print_text()` 格式化正文和作者／标题，Web 使用相同格式。
+
+- RDDH：`hitokoto → content`、`from → title`、`from_who → author`、`source=poetry`。过滤其 `id=0` 且 `from=名言警句` 的固定兜底响应，不把它当作正常随机诗词。未提供的作者信息不臆造。
+- LRCLIB：`trackName → title`、`artistName → author`、优先 `plainLyrics`，缺失则清洗 `syncedLyrics`。跳过纯音乐、空内容和重复结果；去掉 LRC 时间戳、metadata 和重复歌词行，随机选择一首及最多四行片段，`source=lrclib`。
+- 内容：归一换行，移除不可见／非法控制字符，限制文本长度，再按 32 个等宽单元换行（中文计两个）。客户端使用 textContent，绝不把第三方文本作为 HTML 注入。
+- HTTP：3 秒连接超时、6 秒总超时、最多 2 MiB 响应体，设置 LRCLIB 客户端 User-Agent。
+- 缓存：以类型＋搜索词为键，最多 64 个键，每键最多 64 条。LRCLIB 批次 TTL 10 分钟；RDDH 每次访问尝试刷新一条随机内容，滚动保留历史候选。相同键的请求串行处理，其他键不受其网络等待阻塞。
+- 失败：优先使用已有缓存（允许过期缓存），没有则使用本地公版诗词／原创歌词；来源分别为 `local:poetry`、`local:lyrics`，网页提示启用了备用内容。失败后该键 30 秒内不再请求上游。
+- 去重：缓存按标题、作者、清洗后的正文去重。诗词保存最近 16 条选择记录；即使上游 HTTP 成功但反复返回同一首，远程候选耗尽时也会从 21 条本地公版诗词补充未使用候选，来源仍标注 `local:poetry`，不循环输出唯一缓存项。歌词在多个候选时避免连续选择同一首。
+- 缓存只在单进程内存中保存，重启清空，不影响打印历史。将来新增来源只需增加适配器，不改变打印服务或前端返回结构。
 
 ## 资源出处
 
@@ -149,8 +178,8 @@ npm run test:e2e
 
 已覆盖：
 
-- Rust：持久化与重启恢复、验证、Unicode、分页、归档和恢复、并发打印、HTTP 契约、SSE、灵感种类、静态资源白名单。
-- Chromium：指定 RGB、空文本禁用、打印与出纸、拖动持久化、红心逐字输入、键盘快捷键、HTTP／CLI 实时出纸与去重、历史恢复和重打、失败保留输入。
+- Rust（18 项测试）：持久化与重启恢复、验证、Unicode、分页、归档和恢复、并发打印、HTTP 契约、SSE、灵感种类、静态资源白名单；mock 第三方验证五字段契约、查询参数、LRC 清洗、缓存、去重、回退和兼容接口；模拟固定兜底与单首卡死的上游，分别连续取 12 次验证不重复。
+- Chromium（14 项测试）：指定 RGB、空文本禁用、打印与出纸、拖动持久化、红心逐字输入、键盘快捷键、HTTP／CLI 实时出纸与去重、历史恢复和重打、失败保留输入；20px 屏幕／14px 便签字号、按钮和 SVG 对齐、移除多余圆点、横竖屏下拉菜单始终向下及键盘操作、无焦点边框、三套主题、逐项调色与页眉页脚刷新恢复、统一随机内容接口、歌词关键词和打印来源保留。
 - 布局：1200×800、390×844、375×667、844×390，超长便签保持在画布内。
 - 音频：上传自定义 WAV 后刷新仍可使用；分析实际波形能量，验证噗噗和热敏两种合成模式确实输出音频。
 

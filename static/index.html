@@ -15,8 +15,8 @@
     <header class="toolbar">
       <span class="signature">a little love, on paper.</span>
       <nav aria-label="打印机工具">
-        <span id="connection" class="connection" title="连接中" aria-label="连接中"></span>
-        <button id="sound-toggle" class="tool" aria-label="静音" title="开关声音">♫</button>
+        <span id="connection" class="connection" role="status" aria-label="连接中"></span>
+        <button id="sound-toggle" class="tool" aria-label="静音" title="开关声音"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/><path class="sound-muted-mark" d="m3 3 18 18"/></svg></button>
         <button id="history-open" class="tool" title="打印历史" aria-label="打印历史"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/></svg></button>
         <button id="settings-open" class="tool" title="声音与设置" aria-label="声音与设置"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg></button>
       </nav>
@@ -37,7 +37,7 @@
         </div>
         <div class="controls">
           <div class="small-controls">
-            <div class="reset-wrap"><button id="clear" class="clear physical" aria-label="清空文字" title="Clear Text"></button><span class="reset-led"></span></div>
+            <div class="reset-wrap"><button id="clear" class="clear physical" aria-label="清空文字" title="Clear Text"></button></div>
             <button id="inspire" class="heart physical" aria-label="随机生成文字" title="Inspire (Love Note)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></svg></button>
           </div>
           <button id="print" class="print physical" disabled>PRINT</button>
@@ -48,8 +48,12 @@
   </main>
   <div id="toast" role="status" aria-live="polite"></div>
   <dialog id="settings-dialog" aria-labelledby="settings-title">
-    <form method="dialog" class="dialog-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h2 id="settings-title">声音与设置</h2></div><button class="close" aria-label="关闭设置">×</button></form>
-    <div class="settings-body">
+    <form method="dialog" class="dialog-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h2 id="settings-title">打印机设置</h2></div><button class="close" aria-label="关闭设置">×</button></form>
+    <div class="settings-tabs" role="tablist" aria-label="设置分类">
+      <button id="sound-tab" role="tab" aria-selected="true" aria-controls="sound-panel">声音与设置</button>
+      <button id="appearance-tab" role="tab" aria-selected="false" aria-controls="appearance-panel" tabindex="-1">主题配色</button>
+    </div>
+    <div id="sound-panel" class="settings-body settings-panel" role="tabpanel" aria-labelledby="sound-tab">
       <label class="setting-row" for="volume">音量 <output id="volume-value">60%</output></label>
       <input id="volume" type="range" min="0" max="100" value="60">
       <label class="field-label" for="sound-preset">打印音效</label>
@@ -60,10 +64,32 @@
       <div class="sound-actions"><button id="preview-sound" class="text-button">试听音效</button><button id="remove-sound" class="text-button">移除音频</button></div>
       <hr>
       <label class="field-label" for="inspiration-kind">红心按钮的灵感来源</label>
-      <select id="inspiration-kind"><option value="love">温柔情话</option><option value="poetry">古典诗词</option><option value="lyrics">原创短歌词</option></select>
+      <select id="inspiration-kind"><option value="love">温柔情话</option><option value="poetry">古典诗词</option><option value="lyrics">随机歌词 · LRCLIB</option></select>
+      <div id="lyrics-query-field" hidden>
+        <label class="field-label" for="lyrics-query">歌曲 / 歌手搜索词</label>
+        <input id="lyrics-query" class="appearance-text" type="text" maxlength="100" value="海阔天空" placeholder="海阔天空">
+      </div>
       <label class="check"><input id="typing-sound" type="checkbox" checked> 机械打字与回车声音</label>
       <label class="check"><input id="reduced-motion" type="checkbox"> 减少动画（立即出纸）</label>
       <p class="muted">偏好自动保存。HTTP 和命令行发来的打印，也会在这张桌面上出纸。浏览器首次播放声音前，需要你点击一次页面。</p>
+    </div>
+    <div id="appearance-panel" class="settings-body settings-panel" role="tabpanel" aria-labelledby="appearance-tab" hidden>
+      <p class="muted">三套完整主题，覆盖机身、屏幕、便签与画布。也可以单独调色。</p>
+      <div id="theme-grid" class="theme-grid" aria-label="预设主题"></div>
+      <h3 class="theme-section-title">自定义颜色</h3>
+      <div id="theme-colors" class="color-grid"></div>
+      <button id="theme-reset" class="text-button theme-reset">恢复当前主题默认颜色</button>
+      <h3 class="theme-section-title">Header / Footer 文案</h3>
+      <p class="muted">应用到已有和新打印的便签；便签 Header 支持用 {id} 插入编号。留空可隐藏文案。</p>
+      <label class="field-label" for="header-text">画布 Header</label>
+      <input id="header-text" class="appearance-text" type="text" maxlength="100">
+      <label class="field-label" for="footer-text">画布 Footer</label>
+      <input id="footer-text" class="appearance-text" type="text" maxlength="100">
+      <label class="field-label" for="paper-header-text">便签 Header</label>
+      <input id="paper-header-text" class="appearance-text" type="text" maxlength="32">
+      <label class="field-label" for="paper-footer-text">便签 Footer</label>
+      <input id="paper-footer-text" class="appearance-text" type="text" maxlength="48">
+      <p class="muted">主题和自定义项自动保存在当前浏览器中，不影响数据库里的原始文字。</p>
     </div>
   </dialog>
   <dialog id="history-dialog" aria-labelledby="history-title">

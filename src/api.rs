@@ -69,12 +69,31 @@ pub fn router(printer: Printer) -> Router {
                 )
             }),
         )
+        .route(
+            "/themes.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../static/themes.js"),
+                )
+            }),
+        )
+        .route(
+            "/select.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../static/select.js"),
+                )
+            }),
+        )
         .route("/assets/{name}", get(asset))
         .route(
             "/health",
             get(|| async { Json(serde_json::json!({"status":"ok"})) }),
         )
         .route("/api/print", post(print))
+        .route("/api/print/random", get(random_content))
         .route("/api/notes", get(list))
         .route("/api/notes/{id}", patch(update))
         .route("/api/inspire", get(inspire))
@@ -118,17 +137,38 @@ async fn update(
 #[derive(Deserialize)]
 struct InspireQuery {
     kind: Option<InspirationKind>,
+    q: Option<String>,
 }
+// Compatibility endpoint, backed by the same normalized service as /api/print/random.
 async fn inspire(
     State(printer): State<Printer>,
     Query(q): Query<InspireQuery>,
-) -> impl IntoResponse {
-    Json(
-        printer
-            .inspiration
-            .generate(q.kind.unwrap_or(InspirationKind::Love))
-            .await,
-    )
+) -> Result<impl IntoResponse, Error> {
+    let item = printer
+        .random_content
+        .random(q.kind.unwrap_or(InspirationKind::Love), q.q.as_deref())
+        .await?;
+    Ok(Json(crate::inspiration::Inspiration {
+        text: item.print_text(),
+        provider: item.source,
+    }))
+}
+#[derive(Deserialize)]
+struct RandomQuery {
+    #[serde(rename = "type", alias = "kind")]
+    kind: Option<InspirationKind>,
+    q: Option<String>,
+}
+async fn random_content(
+    State(printer): State<Printer>,
+    query: Result<Query<RandomQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<impl IntoResponse, Error> {
+    let Query(q) = query.map_err(|e| Error::Validation(e.body_text()))?;
+    let item = printer
+        .random_content
+        .random(q.kind.unwrap_or(InspirationKind::Poetry), q.q.as_deref())
+        .await?;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(item)))
 }
 async fn events(State(printer): State<Printer>) -> Result<impl IntoResponse, Error> {
     // Subscribe before the snapshot query: no print can disappear in the handshake gap.

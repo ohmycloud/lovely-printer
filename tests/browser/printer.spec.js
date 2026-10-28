@@ -17,6 +17,11 @@ const printText = async (page, text) => {
   return page.locator('.paper-position').last();
 };
 
+const selectSetting = async (page, id, value) => {
+  await page.locator(`#${id}-trigger`).click();
+  await page.locator(`#${id}-options [data-value="${value}"]`).click();
+};
+
 test('specified materials, typing, ejection, dragging and persistent position', async ({ page, request }) => {
   await expect(page.locator('.machine')).toHaveCSS('background-color', 'rgb(229, 225, 214)');
   await expect(page.locator('#print')).toHaveCSS('background-color', 'rgb(195, 102, 73)');
@@ -152,6 +157,127 @@ test('a new connection recovers notes printed while the page was closed', async 
   await page.goto('/');
   await expect(page.locator('[data-id="' + note.id + '"]')).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('.paper-position')).toHaveCount(1);
+});
+
+test('clicking a note has no outline and screen font is reduced without shrinking notes', async ({ page }) => {
+  const paper = await printText(page, '字号和焦点回归测试');
+  await paper.click();
+  await expect(paper).toHaveCSS('outline-style', 'none');
+  await expect(page.locator('#input')).toHaveCSS('font-size', '20px');
+  await expect(page.locator('.paper-text')).toHaveCSS('font-size', '14px');
+  await paper.focus();
+  await expect(paper).toHaveCSS('outline-style', 'none');
+});
+
+test('three themes cover printer, notes, screen and background; overrides and text persist', async ({ page }) => {
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  await printText(page, '为纸张换一件外衣。');
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await page.getByRole('tab', { name: '主题配色' }).click();
+  await expect(page.locator('.theme-card')).toHaveCount(3);
+  await page.getByRole('button', { name: '晴空蓝', exact: true }).click();
+  await expect(page.locator('.machine')).toHaveCSS('background-color', 'rgb(164, 212, 237)');
+  await expect(page.locator('.screen')).toHaveCSS('background-color', 'rgb(29, 35, 69)');
+  await expect(page.locator('.paper')).toHaveCSS('background-color', 'rgb(239, 250, 255)');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(131, 182, 231)');
+  await page.getByRole('button', { name: '鼠尾草绿', exact: true }).click();
+  await expect(page.locator('.machine')).toHaveCSS('background-color', 'rgb(190, 205, 184)');
+  await page.getByRole('button', { name: '晴空蓝', exact: true }).click();
+  for (const [key, value] of Object.entries({ paper: '#ffeedd', background: '#ddeeff', header: '#123456', footer: '#654321' })) {
+    await page.locator('#theme-color-' + key).evaluate((element, color) => { element.value = color; element.dispatchEvent(new Event('input', { bubbles: true })); }, value);
+  }
+  await page.locator('#header-text').fill('我的蓝色桌面');
+  await page.locator('#footer-text').fill('KEEP THE LITTLE THINGS');
+  await page.locator('#paper-header-text').fill('NOTE / {id}');
+  await page.locator('#paper-footer-text').fill('WITH LOVE');
+  await expect(page.locator('.paper-footer span')).toHaveText('WITH LOVE');
+  await expect(page.locator('.paper-header span')).toContainText('NOTE /');
+  await page.reload();
+  await expect(page.locator('.signature')).toHaveText('我的蓝色桌面');
+  await expect(page.locator('#hint')).toHaveText('KEEP THE LITTLE THINGS');
+  await expect(page.locator('.paper')).toHaveCSS('background-color', 'rgb(255, 238, 221)');
+  await expect(page.locator('.paper-header')).toHaveCSS('color', 'rgb(18, 52, 86)');
+  await expect(page.locator('.paper-footer span')).toHaveCSS('color', 'rgb(101, 67, 33)');
+  await expect(page.locator('.paper-footer span')).toHaveText('WITH LOVE');
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await page.getByRole('tab', { name: '主题配色' }).click();
+  await expect(page.getByRole('button', { name: '晴空蓝', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: '恢复当前主题默认颜色' }).click();
+  await expect(page.locator('.paper')).toHaveCSS('background-color', 'rgb(239, 250, 255)');
+  expect(errors).toEqual([]);
+});
+
+test('heart and print use the unified poetry/lyrics contract and configurable lyrics search', async ({ page, request }) => {
+  const urls = [];
+  await page.route('**/api/print/random?**', async route => {
+    const url = new URL(route.request().url()); urls.push(url);
+    const poetry = url.searchParams.get('type') === 'poetry';
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ type: poetry ? 'poetry' : 'lyrics', title: poetry ? '静夜思' : '测试歌曲', author: poetry ? '李白' : '测试歌手', content: poetry ? '床前明月光，疑是地上霜。' : '这是测试中的原创歌词。', source: poetry ? 'poetry' : 'lrclib' }) });
+  });
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await selectSetting(page, 'inspiration-kind', 'poetry');
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await page.locator('#inspire').click();
+  await expect(page.locator('#inspire')).toBeEnabled();
+  expect(await page.locator('#input').inputValue()).toContain('李白《静夜思》');
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await selectSetting(page, 'inspiration-kind', 'lyrics');
+  await expect(page.locator('#lyrics-query')).toBeVisible();
+  await page.locator('#lyrics-query').fill('测试歌手');
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await page.locator('#inspire').click();
+  await expect(page.locator('#inspire')).toBeEnabled();
+  expect(await page.locator('#input').inputValue()).toContain('测试歌手《测试歌曲》');
+  expect(urls.at(-1).searchParams.get('q')).toBe('测试歌手');
+  await page.locator('#print').click();
+  await expect.poll(async () => (await (await request.get('/api/notes')).json())[0].source).toBe('web:lrclib');
+});
+
+test('extra indicator dots are removed and physical buttons and toolbar SVGs align', async ({ page }) => {
+  await expect(page.locator('.reset-led')).toHaveCount(0);
+  await expect(page.locator('#connection')).toHaveCSS('clip-path', 'inset(50%)');
+  const clear = await page.locator('#clear').boundingBox();
+  const heart = await page.locator('#inspire').boundingBox();
+  expect(clear.y + clear.height / 2).toBeCloseTo(heart.y + heart.height / 2, 1);
+  const icons = await page.locator('.toolbar .tool svg').evaluateAll(elements => elements.map(element => {
+    const r = element.getBoundingClientRect(); return { y: r.y + r.height / 2, width: r.width, height: r.height };
+  }));
+  expect(icons).toHaveLength(3);
+  expect(Math.max(...icons.map(i => i.y)) - Math.min(...icons.map(i => i.y))).toBeLessThan(.1);
+  expect(icons.every(icon => icon.width === 18 && icon.height === 18)).toBe(true);
+  await page.locator('#sound-toggle').click();
+  await expect(page.locator('#sound-toggle svg')).toHaveCount(1);
+  await expect(page.locator('#sound-toggle')).toHaveClass(/is-muted/);
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await page.getByRole('tab', { name: '主题配色' }).click();
+  await expect(page.getByText('给你的打印机换件外衣')).toHaveCount(0);
+});
+
+test('both custom dropdowns always open below their trigger, with keyboard and modal support', async ({ page }) => {
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  for (const size of [{ width: 1200, height: 800 }, { width: 390, height: 667 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(size);
+    for (const id of ['sound-preset', 'inspiration-kind']) {
+      const trigger = page.locator(`#${id}-trigger`);
+      await trigger.scrollIntoViewIfNeeded(); await trigger.click();
+      const menu = page.locator(`#${id}-options`);
+      await expect(menu).toBeVisible();
+      const a = await trigger.boundingBox(), b = await menu.boundingBox();
+      expect(b.y).toBeGreaterThanOrEqual(a.y + a.height);
+      expect(b.y + b.height).toBeLessThanOrEqual(size.height);
+      await trigger.press('Escape');
+      await expect(menu).not.toBeVisible();
+      await expect(page.locator('#settings-dialog')).toBeVisible();
+    }
+  }
+  await selectSetting(page, 'sound-preset', 'thermal');
+  await expect(page.locator('#sound-preset')).toHaveValue('thermal');
+  const source = page.locator('#inspiration-kind-trigger');
+  await source.press('End'); await source.press('Enter');
+  await expect(page.locator('#inspiration-kind')).toHaveValue('lyrics');
+  await expect(page.locator('#lyrics-query')).toBeVisible();
+  await source.click(); await page.locator('#settings-title').click();
+  await expect(page.locator('#inspiration-kind-options')).not.toBeVisible();
 });
 
 test('failed print preserves input and reports an error', async ({ page }) => {

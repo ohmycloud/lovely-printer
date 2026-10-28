@@ -1,7 +1,10 @@
 import { PrinterAudio } from './audio.js';
+import { enhanceSelects } from './select.js';
+import { THEMES, COLOR_FIELDS, sanitizeAppearance, themeColors, applyTheme } from './themes.js';
 
 const $ = (selector) => document.querySelector(selector);
 const input = $('#input'), printButton = $('#print'), papers = $('#papers');
+const dropdowns = enhanceSelects(document.querySelectorAll('#settings-dialog select'));
 const defaults = { volume: .6, muted: false, preset: 'puff', typingSound: true, kind: 'love', reducedMotion: false };
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem('motopager-settings') || '{}'); } catch {}
@@ -9,7 +12,10 @@ const settings = { ...defaults, ...saved };
 settings.volume = Number.isFinite(settings.volume) ? Math.max(0, Math.min(1, settings.volume)) : .6;
 if (!['puff', 'thermal', 'custom'].includes(settings.preset)) settings.preset = 'puff';
 if (!['love', 'poetry', 'lyrics'].includes(settings.kind)) settings.kind = 'love';
+sanitizeAppearance(settings);
+applyTheme(settings);
 const audio = new PrinterAudio(settings);
+let inputSource = 'web';
 const notes = new Map(), seen = new Set(), queue = [];
 let active = null, submitting = false, generating = false, highestZ = 1001, toastTimer;
 let ready = false, historyOffset = 0, historyLoading = false, historyGeneration = 0;
@@ -38,7 +44,7 @@ function updateInput() {
   $('.screen').classList.toggle('has-text', Boolean(input.value));
   printButton.disabled = !input.value.trim() || submitting || generating;
 }
-input.addEventListener('input', updateInput);
+input.addEventListener('input', () => { inputSource = 'web'; updateInput(); });
 input.addEventListener('keydown', (event) => {
   if (event.isComposing) return;
   if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); submit(); }
@@ -56,7 +62,7 @@ async function submit() {
   if (Array.from(text.replace(/\r\n?/g, '\n')).length > 4000) return toast('每张便签最多 4000 个字符');
   submitting = true; updateInput(); audio.carriage();
   try {
-    const note = await api('/api/print', { method: 'POST', body: JSON.stringify({ text, source: 'web' }) });
+    const note = await api('/api/print', { method: 'POST', body: JSON.stringify({ text, source: inputSource }) });
     enqueue(note); // SSE may arrive first. enqueue is idempotent.
     if (input.value === text) input.value = '';
   } catch (error) { toast(`未能打印：${error.message}。文字已为你保留。`); }
@@ -67,12 +73,15 @@ $('#inspire').addEventListener('click', async () => {
   generating = true; audio.key(); $('#inspire').disabled = true; $('#inspire').classList.add('loading');
   const previous = input.value; input.value = ''; input.placeholder = 'GENERATING...'; input.disabled = true; updateInput();
   try {
-    const message = await api(`/api/inspire?kind=${settings.kind}`);
+    const message = await api(`/api/print/random?type=${settings.kind}&q=${encodeURIComponent(settings.lyricsQuery || '海阔天空')}`);
+    const messageText = `${message.content}\n\n—— ${message.author}《${message.title}》`;
+    inputSource = `web:${message.source}`;
+    if (message.source.startsWith('local:')) toast('第三方暂无可用内容，已使用本地备用内容');
     input.disabled = false; input.placeholder = 'INPUT_TEXT...';
     input.value = '';
     // Feed a generated message into the amber screen one grapheme at a time.
-    const characters = window.Intl?.Segmenter ? [...new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(message.text)].map(s => s.segment) : Array.from(message.text);
-    if (reducedMotion()) input.value = message.text;
+    const characters = window.Intl?.Segmenter ? [...new Intl.Segmenter('zh', { granularity: 'grapheme' }).segment(messageText)].map(s => s.segment) : Array.from(messageText);
+    if (reducedMotion()) input.value = messageText;
     else {
       input.disabled = true;
       for (let i = 0; i < characters.length; i++) {
@@ -99,7 +108,7 @@ function makePaper(note) {
   const close = document.createElement('button'); close.className = 'paper-close'; close.textContent = '×';
   close.title = '收起到历史'; close.setAttribute('aria-label', '收起便签到历史');
   const header = document.createElement('div'); header.className = 'paper-header';
-  const id = document.createElement('span'); id.textContent = `ID: ${note.id.slice(0, 6).toUpperCase()}`;
+  const id = document.createElement('span'); id.textContent = settings.paperHeaderText.replaceAll('{id}', note.id.slice(0, 6).toUpperCase());
   const time = document.createElement('time');
   const date = new Date(note.created_at); time.dateTime = note.created_at;
   time.textContent = date.toLocaleString('en-US', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
@@ -107,7 +116,7 @@ function makePaper(note) {
   const text = document.createElement('div'); text.className = 'paper-text'; text.textContent = note.text;
   const footer = document.createElement('div'); footer.className = 'paper-footer';
   const barcode = document.createElement('div'); barcode.className = 'barcode'; barcode.setAttribute('aria-hidden', 'true');
-  const end = document.createElement('span'); end.textContent = 'End of Transmission';
+  const end = document.createElement('span'); end.textContent = settings.paperFooterText;
   footer.append(barcode, end); paper.append(close, header, text, footer); eject.append(paper); position.append(eject); papers.append(position);
   const item = { note, el: position, paper, eject, height: paper.offsetHeight, scale: 1, dragging: false, printing: false, z: note.z_index > 1 ? note.z_index : Math.min(999, note.seq + 1) };
   notes.set(note.id, item); seen.add(note.id);
@@ -176,7 +185,7 @@ async function processQueue() {
   setTimeout(() => { stopAudio(); item.stopAudio = null; }, 180);
   item.printing = false; item.el.classList.remove('printing'); item.el.removeAttribute('aria-busy'); item.el.style.clipPath = '';
   $('#screen-led').classList.remove('busy'); printButton.classList.remove('printing');
-  $('#hint').textContent = 'DRAG YOUR NOTE. KEEP THE FEELING.';
+  $('#hint').textContent = settings.footerText;
   active = null; processQueue();
 }
 function removeItem(id) {
@@ -209,7 +218,8 @@ function sync(snapshot) {
 }
 function makeWelcome() {
   const note = { id: 'welcome', seq: 0, created_at: new Date().toISOString(), text: 'Welcome to the MotoPager.\n\n写下一句话，或按下红心，\n让灵感为你停留。\n\nHit PRINT to keep a moment.', x: null, y: null, rotation: -2, z_index: 1 };
-  const item = makePaper(note); item.el.querySelector('.paper-header span').textContent = 'HELLO, YOU';
+  const item = makePaper(note);
+  if (settings.paperHeaderText === 'ID: {id}') item.el.querySelector('.paper-header span').textContent = 'HELLO, YOU';
   const close = item.el.querySelector('.paper-close');
   close.replaceWith(close.cloneNode(true)); item.el.querySelector('.paper-close').onclick = removeWelcome;
 }
@@ -277,15 +287,72 @@ events.addEventListener('retry-sync', () => {
 connectEvents();
 
 // Settings stay out of the printer's original face, in a quiet utility panel.
+function updateAppearanceText() {
+  $('.signature').textContent = settings.headerText;
+  if (!active) $('#hint').textContent = settings.footerText;
+  for (const item of notes.values()) {
+    item.el.querySelector('.paper-header span').textContent = settings.paperHeaderText.replaceAll('{id}', item.note.id.slice(0, 6).toUpperCase());
+    item.el.querySelector('.paper-footer span').textContent = settings.paperFooterText;
+    item.height = item.paper.offsetHeight;
+    layoutPaper(item);
+  }
+}
+function renderAppearanceUI() {
+  for (const button of $('#theme-grid').children) button.setAttribute('aria-pressed', String(button.dataset.theme === settings.themeId));
+  const colors = themeColors(settings);
+  for (const key of Object.keys(COLOR_FIELDS)) $(`#theme-color-${key}`).value = colors[key];
+}
+for (const [id, theme] of Object.entries(THEMES)) {
+  const button = document.createElement('button'); button.className = 'theme-card'; button.dataset.theme = id;
+  button.title = theme.description; button.setAttribute('aria-label', theme.name);
+  const preview = document.createElement('span'); preview.className = 'theme-preview'; preview.setAttribute('aria-hidden', 'true');
+  for (const [key, value] of Object.entries({ bg: theme.colors.background, shell: theme.colors.shell, screen: theme.colors.screen, accent: theme.colors.accent })) preview.style.setProperty(`--preview-${key}`, value);
+  preview.append(document.createElement('i'));
+  const label = document.createElement('strong'); label.textContent = theme.name; button.append(preview, label);
+  button.onclick = () => { settings.themeId = id; applyTheme(settings); saveSettings(); renderAppearanceUI(); };
+  $('#theme-grid').append(button);
+}
+for (const [key, labelText] of Object.entries(COLOR_FIELDS)) {
+  const label = document.createElement('label'); label.className = 'color-field';
+  const field = document.createElement('input'); field.type = 'color'; field.id = `theme-color-${key}`;
+  const span = document.createElement('span'); span.textContent = labelText;
+  field.oninput = () => { settings.themeOverrides[settings.themeId][key] = field.value; applyTheme(settings); saveSettings(); };
+  label.append(field, span); $('#theme-colors').append(label);
+}
+for (const [key, id] of Object.entries({ headerText: 'header-text', footerText: 'footer-text', paperHeaderText: 'paper-header-text', paperFooterText: 'paper-footer-text' })) {
+  $(`#${id}`).value = settings[key];
+  $(`#${id}`).oninput = event => { settings[key] = event.target.value; saveSettings(); updateAppearanceText(); };
+}
+$('#theme-reset').onclick = () => { settings.themeOverrides[settings.themeId] = {}; applyTheme(settings); saveSettings(); renderAppearanceUI(); };
+function selectSettingsTab(selected) {
+  dropdowns.close();
+  for (const name of ['sound', 'appearance']) {
+    const tab = $(`#${name}-tab`); const isSelected = name === selected;
+    tab.setAttribute('aria-selected', String(isSelected)); tab.tabIndex = isSelected ? 0 : -1; $(`#${name}-panel`).hidden = !isSelected;
+  }
+}
+for (const name of ['sound', 'appearance']) {
+  $(`#${name}-tab`).onclick = () => selectSettingsTab(name);
+  $(`#${name}-tab`).onkeydown = event => {
+    if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      event.preventDefault(); const next = event.key === 'Home' ? 'sound' : event.key === 'End' ? 'appearance' : name === 'sound' ? 'appearance' : 'sound';
+      selectSettingsTab(next); $(`#${next}-tab`).focus();
+    }
+  };
+}
+renderAppearanceUI(); updateAppearanceText();
 function updateSoundUI() {
   $('#volume').value = settings.volume * 100; $('#volume-value').value = `${Math.round(settings.volume * 100)}%`;
   $('#sound-preset').value = settings.preset; $('#typing-sound').checked = settings.typingSound;
   $('#reduced-motion').checked = settings.reducedMotion; $('#inspiration-kind').value = settings.kind;
-  $('#sound-toggle').textContent = settings.muted ? '♪̸' : '♫';
+  $('#lyrics-query-field').hidden = settings.kind !== 'lyrics';
+  $('#sound-toggle').classList.toggle('is-muted', settings.muted);
+  $('#sound-toggle').setAttribute('aria-pressed', String(settings.muted));
   $('#sound-toggle').setAttribute('aria-label', settings.muted ? '开启声音' : '静音');
   $('#sound-toggle').title = settings.muted ? '开启声音' : '静音';
   $('#custom-name').textContent = audio.customName ? `已保存：${audio.customName}（仅此浏览器）` : '自定义音频只保存在此浏览器，不上传到服务器。';
   $('#remove-sound').disabled = !audio.customBuffer;
+  dropdowns.sync();
 }
 $('#sound-toggle').onclick = () => { settings.muted = !settings.muted; saveSettings(); };
 $('#settings-open').onclick = () => $('#settings-dialog').showModal();
@@ -297,6 +364,8 @@ $('#sound-preset').onchange = event => {
 $('#typing-sound').onchange = event => { settings.typingSound = event.target.checked; saveSettings(); };
 $('#reduced-motion').onchange = event => { settings.reducedMotion = event.target.checked; saveSettings(); if (settings.reducedMotion) active?.animation?.finish(); };
 $('#inspiration-kind').onchange = event => { settings.kind = event.target.value; saveSettings(); };
+$('#lyrics-query').value = settings.lyricsQuery;
+$('#lyrics-query').oninput = event => { settings.lyricsQuery = event.target.value; saveSettings(); };
 $('#sound-file').onchange = async event => {
   const file = event.target.files[0]; if (!file) return;
   try { await audio.setCustom(file); settings.preset = 'custom'; saveSettings(); toast('你的声音已保存'); }
