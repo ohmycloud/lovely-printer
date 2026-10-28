@@ -1,0 +1,28 @@
+[package]
+name = "lovely-printer"
+version = "0.1.0"
+edition = "2024"
+description = "A tactile note printer: Axum, SQLite, and a little paper magic"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+futures-util = "0.3"
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"

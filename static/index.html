@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f0f2f5">
+  <meta name="description" content="MotoPager — 把想说的话，留在纸上。A tactile digital note printer.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='20' width='56' height='40' rx='12' fill='%23e5e1d6'/%3E%3Cpath d='M18 5h28v25H18z' fill='white'/%3E%3Crect x='12' y='33' width='40' height='12' rx='3' fill='%231a1c1a'/%3E%3Ccircle cx='47' cy='52' r='5' fill='%23c36649'/%3E%3C/svg%3E">
+  <title>MotoPager · Digital Note Printer</title>
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <main id="canvas" aria-label="打印画布">
+    <header class="toolbar">
+      <span class="signature">a little love, on paper.</span>
+      <nav aria-label="打印机工具">
+        <span id="connection" class="connection" title="连接中" aria-label="连接中"></span>
+        <button id="sound-toggle" class="tool" aria-label="静音" title="开关声音">♫</button>
+        <button id="history-open" class="tool" title="打印历史" aria-label="打印历史"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 1 2.5 7M3 4v7h7M12 7v5l3 2"/></svg></button>
+        <button id="settings-open" class="tool" title="声音与设置" aria-label="声音与设置"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg></button>
+      </nav>
+    </header>
+    <div id="papers" aria-label="已打印便签"></div>
+    <section id="printer" aria-label="MotoPager 打印机">
+      <div class="machine">
+        <header class="branding">
+          <h1>Moto<span>Pager</span></h1>
+          <div class="subtitle"><i></i><span>Digital Note Printer</span><i></i></div>
+        </header>
+        <div class="screen-frame">
+          <div class="screen">
+            <textarea id="input" placeholder="INPUT_TEXT..." aria-label="要打印的文字" spellcheck="false" maxlength="8000"></textarea>
+            <span class="screen-caret" aria-hidden="true"></span>
+            <span id="screen-led" class="screen-led" title="就绪" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="controls">
+          <div class="small-controls">
+            <div class="reset-wrap"><button id="clear" class="clear physical" aria-label="清空文字" title="Clear Text"></button><span class="reset-led"></span></div>
+            <button id="inspire" class="heart physical" aria-label="随机生成文字" title="Inspire (Love Note)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/></svg></button>
+          </div>
+          <button id="print" class="print physical" disabled>PRINT</button>
+        </div>
+      </div>
+    </section>
+    <footer class="canvas-footer"><span id="hint">TYPE A THOUGHT. KEEP A MOMENT.</span><span>⌘ / Ctrl + Enter to print</span></footer>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <form method="dialog" class="dialog-heading"><div><span class="eyebrow">MAKE IT YOURS</span><h2 id="settings-title">声音与设置</h2></div><button class="close" aria-label="关闭设置">×</button></form>
+    <div class="settings-body">
+      <label class="setting-row" for="volume">音量 <output id="volume-value">60%</output></label>
+      <input id="volume" type="range" min="0" max="100" value="60">
+      <label class="field-label" for="sound-preset">打印音效</label>
+      <select id="sound-preset"><option value="puff">噗噗噗 · 柔软气泡（默认）</option><option value="thermal">原站 · 热敏打印机</option><option value="custom">自定义音频</option></select>
+      <label class="upload" for="sound-file">＋ 上传你的打印声音 <small>MP3 / WAV / OGG · 最大 10 MB，最长 30 秒</small></label>
+      <input id="sound-file" type="file" accept="audio/*" hidden>
+      <p id="custom-name" class="muted">自定义音频只保存在此浏览器，不上传到服务器。</p>
+      <div class="sound-actions"><button id="preview-sound" class="text-button">试听音效</button><button id="remove-sound" class="text-button">移除音频</button></div>
+      <hr>
+      <label class="field-label" for="inspiration-kind">红心按钮的灵感来源</label>
+      <select id="inspiration-kind"><option value="love">温柔情话</option><option value="poetry">古典诗词</option><option value="lyrics">原创短歌词</option></select>
+      <label class="check"><input id="typing-sound" type="checkbox" checked> 机械打字与回车声音</label>
+      <label class="check"><input id="reduced-motion" type="checkbox"> 减少动画（立即出纸）</label>
+      <p class="muted">偏好自动保存。HTTP 和命令行发来的打印，也会在这张桌面上出纸。浏览器首次播放声音前，需要你点击一次页面。</p>
+    </div>
+  </dialog>
+  <dialog id="history-dialog" aria-labelledby="history-title">
+    <form method="dialog" class="dialog-heading"><div><span class="eyebrow">LITTLE THINGS, KEPT</span><h2 id="history-title">打印历史</h2></div><button class="close" aria-label="关闭历史">×</button></form>
+    <p class="history-caption muted">关掉桌面上的便签不会删除历史。点击「放回桌面」即可找回。</p>
+    <div id="history-list"></div>
+    <button id="history-more" class="text-button more">加载更多</button>
+  </dialog>
+  <noscript>请启用 JavaScript 体验打字、打印和出纸动画。HTTP API 仍可独立使用。</noscript>
+</body>
+</html>

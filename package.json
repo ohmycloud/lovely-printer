@@ -1,0 +1,7 @@
+{
+  "name": "lovely-printer-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": { "test:e2e": "playwright test" },
+  "devDependencies": { "@playwright/test": "^1.58.0" }
+}
