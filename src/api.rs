@@ -87,6 +87,15 @@ pub fn router(printer: Printer) -> Router {
                 )
             }),
         )
+        .route(
+            "/scrollbar.js",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                    include_str!("../static/scrollbar.js"),
+                )
+            }),
+        )
         .route("/assets/{name}", get(asset))
         .route(
             "/health",

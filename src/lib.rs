@@ -129,8 +129,10 @@ impl Printer {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let rotation = (Uuid::new_v4().as_bytes()[0] as f64 / 255.0 - 0.5) * 2.0;
+        // Allocate a frontmost layer in the same SQLite write as the print.
+        // The single statement is atomic even when CLI/HTTP commands race.
         let note = sqlx::query_as::<_, Note>(
-            "INSERT INTO notes (id,text,source,created_at,rotation) VALUES (?,?,?,?,?) RETURNING *",
+            "INSERT INTO notes (id,text,source,created_at,rotation,z_index) VALUES (?,?,?,?,?,MAX(1000,COALESCE((SELECT MAX(z_index) FROM notes),0))+1) RETURNING *",
         )
         .bind(id)
         .bind(text)

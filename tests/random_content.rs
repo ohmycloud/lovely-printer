@@ -20,6 +20,8 @@ async fn mock_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
     let placeholder_count = calls.clone();
+    let healthy_count = calls.clone();
+    let rate_count = calls.clone();
     let app = Router::new()
         .route("/poetry", get(|Query(q): Query<HashMap<String,String>>| async move {
             assert_eq!(q.get("type").map(String::as_str), Some("i"));
@@ -46,6 +48,20 @@ async fn mock_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>
             async move {
                 count.fetch_add(1, Ordering::Relaxed);
                 Json(json!({"id":0,"hitokoto":"海纳百川，有容乃大。","type":"i","from":"名言警句","from_who":null,"dynasty":null}))
+            }
+        }))
+        .route("/counted-poetry", get(move || {
+            let count = healthy_count.clone();
+            async move {
+                count.fetch_add(1, Ordering::Relaxed);
+                Json(json!({"id":"P100347","hitokoto":"床前明月光，疑是地上霜。","from":"《静夜思》","from_who":"李白"}))
+            }
+        }))
+        .route("/rate-limited", get(move || {
+            let count = rate_count.clone();
+            async move {
+                count.fetch_add(1, Ordering::Relaxed);
+                (axum::http::StatusCode::TOO_MANY_REQUESTS, [(axum::http::header::RETRY_AFTER, "120")], "rate limited")
             }
         }))
         .route("/empty", get(||async { Json(json!([])) }));
@@ -209,5 +225,46 @@ async fn stuck_valid_poetry_source_does_not_force_repeating_a_single_cached_cand
             "a single-item upstream must not repeat"
         );
     }
+    server.abort();
+}
+
+#[tokio::test]
+async fn healthy_poetry_upstream_is_not_burst_called_by_concurrent_random_requests() {
+    let (base, calls, server) = mock_server().await;
+    let service = Arc::new(RandomContentService::new(
+        format!("{base}/counted-poetry"),
+        format!("{base}/lyrics"),
+        Arc::new(LocalProvider::default()),
+    ));
+    let tasks: Vec<_> = (0..12)
+        .map(|_| {
+            let service = service.clone();
+            tokio::spawn(
+                async move { service.random(InspirationKind::Poetry, None).await.unwrap() },
+            )
+        })
+        .collect();
+    let mut contents = std::collections::HashSet::new();
+    for task in tasks {
+        assert!(contents.insert(task.await.unwrap().content));
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    server.abort();
+}
+
+#[tokio::test]
+async fn upstream_429_falls_back_without_retry_storms_or_client_errors() {
+    let (base, calls, server) = mock_server().await;
+    let service = RandomContentService::new(
+        format!("{base}/rate-limited"),
+        format!("{base}/lyrics"),
+        Arc::new(LocalProvider::default()),
+    );
+    for _ in 0..12 {
+        let item = service.random(InspirationKind::Poetry, None).await.unwrap();
+        assert_eq!(item.source, "local:poetry");
+        assert!(!item.content.is_empty());
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
     server.abort();
 }

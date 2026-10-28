@@ -53,11 +53,12 @@
       <button id="sound-tab" role="tab" aria-selected="true" aria-controls="sound-panel">声音与设置</button>
       <button id="appearance-tab" role="tab" aria-selected="false" aria-controls="appearance-panel" tabindex="-1">主题配色</button>
     </div>
+    <div id="settings-scroll" class="settings-scroll">
     <div id="sound-panel" class="settings-body settings-panel" role="tabpanel" aria-labelledby="sound-tab">
       <label class="setting-row" for="volume">音量 <output id="volume-value">60%</output></label>
       <input id="volume" type="range" min="0" max="100" value="60">
       <label class="field-label" for="sound-preset">打印音效</label>
-      <select id="sound-preset"><option value="puff">噗噗噗 · 柔软气泡（默认）</option><option value="thermal">原站 · 热敏打印机</option><option value="custom">自定义音频</option></select>
+      <select id="sound-preset"><option value="puff">柔软气泡（默认）</option><option value="thermal">热敏打印机</option><option value="custom">自定义音频</option></select>
       <label class="upload" for="sound-file">＋ 上传你的打印声音 <small>MP3 / WAV / OGG · 最大 10 MB，最长 30 秒</small></label>
       <input id="sound-file" type="file" accept="audio/*" hidden>
       <p id="custom-name" class="muted">自定义音频只保存在此浏览器，不上传到服务器。</p>
@@ -90,6 +91,7 @@
       <label class="field-label" for="paper-footer-text">便签 Footer</label>
       <input id="paper-footer-text" class="appearance-text" type="text" maxlength="48">
       <p class="muted">主题和自定义项自动保存在当前浏览器中，不影响数据库里的原始文字。</p>
+    </div>
     </div>
   </dialog>
   <dialog id="history-dialog" aria-labelledby="history-title">

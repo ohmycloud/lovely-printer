@@ -17,6 +17,60 @@ pub const DEFAULT_LYRICS_QUERY: &str = "海阔天空";
 const CACHE_TTL: Duration = Duration::from_secs(600);
 const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const POETRY_RATE_WINDOW: Duration = Duration::from_secs(60);
+const POETRY_RATE_MAX: usize = 60;
+// Leave a small safety margin below the documented 60 requests/minute.
+const POETRY_MIN_INTERVAL: Duration = Duration::from_millis(1100);
+
+#[derive(Default)]
+struct PoetryRateLimit {
+    attempts: VecDeque<Instant>,
+    blocked_until: Option<Instant>,
+}
+impl PoetryRateLimit {
+    fn try_acquire(&mut self, now: Instant) -> bool {
+        if self.blocked_until.is_some_and(|until| now < until) {
+            return false;
+        }
+        while self
+            .attempts
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= POETRY_RATE_WINDOW)
+        {
+            self.attempts.pop_front();
+        }
+        if self.attempts.len() >= POETRY_RATE_MAX
+            || self
+                .attempts
+                .back()
+                .is_some_and(|at| now.duration_since(*at) < POETRY_MIN_INTERVAL)
+        {
+            return false;
+        }
+        self.attempts.push_back(now);
+        true
+    }
+    fn block_for(&mut self, now: Instant, delay: Duration) {
+        let until = now.checked_add(delay).unwrap_or(now + POETRY_RATE_WINDOW);
+        self.blocked_until = Some(self.blocked_until.map_or(until, |old| old.max(until)));
+    }
+}
+fn retry_after_delay(value: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> Duration {
+    let delay = value
+        .and_then(|text| {
+            text.trim()
+                .parse::<u64>()
+                .ok()
+                .map(Duration::from_secs)
+                .or_else(|| {
+                    chrono::DateTime::parse_from_rfc2822(text)
+                        .ok()
+                        .and_then(|date| date.signed_duration_since(now).to_std().ok())
+                })
+        })
+        .unwrap_or(POETRY_RATE_WINDOW);
+    delay.max(POETRY_RATE_WINDOW)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RandomContent {
@@ -62,6 +116,7 @@ pub struct RandomContentService {
     lyrics_url: String,
     love: Arc<dyn InspirationProvider>,
     cache: Mutex<HashMap<Key, Arc<Mutex<Entry>>>>,
+    poetry_rate_limit: Mutex<PoetryRateLimit>,
 }
 impl RandomContentService {
     pub fn configured(love: Arc<dyn InspirationProvider>) -> Self {
@@ -86,6 +141,7 @@ impl RandomContentService {
             lyrics_url,
             love,
             cache: Mutex::new(HashMap::new()),
+            poetry_rate_limit: Mutex::new(PoetryRateLimit::default()),
         }
     }
     pub async fn random(
@@ -137,9 +193,14 @@ impl RandomContentService {
         // Single flight per search, without blocking requests to other sources/queries.
         let mut entry = entry.lock().await;
         let now = Instant::now();
-        // The poetry endpoint returns one random item, so fetch a new item each time.
-        // Its rolling cache is retained for outages; LRCLIB's search batch has a TTL.
-        if now >= entry.retry_after && (kind == InspirationKind::Poetry || now >= entry.expires) {
+        // Never wait or burst against the poetry endpoint: requests without an
+        // upstream permit immediately use cached/local candidates instead.
+        let needs_refresh =
+            now >= entry.retry_after && (kind == InspirationKind::Poetry || now >= entry.expires);
+        let can_fetch = needs_refresh
+            && (kind != InspirationKind::Poetry
+                || self.poetry_rate_limit.lock().await.try_acquire(now));
+        if can_fetch {
             match self.fetch(&key).await {
                 Ok(items) if !items.is_empty() => {
                     if kind == InspirationKind::Lyrics {
@@ -242,7 +303,28 @@ impl RandomContentService {
                 .query(&[("q", key.query.as_str())]),
             InspirationKind::Love => unreachable!(),
         };
-        let mut response = request.send().await?.error_for_status()?;
+        let response = request.send().await?;
+        if key.kind == InspirationKind::Poetry
+            && response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
+            let delay = retry_after_delay(
+                response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok()),
+                chrono::Utc::now(),
+            );
+            self.poetry_rate_limit
+                .lock()
+                .await
+                .block_for(Instant::now(), delay);
+            return Err(format!(
+                "Poetry API returned 429; cooling down for {} seconds",
+                delay.as_secs()
+            )
+            .into());
+        }
+        let mut response = response.error_for_status()?;
         if response
             .content_length()
             .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
@@ -299,7 +381,17 @@ fn normalize_poetry(data: &serde_json::Value) -> Option<RandomContent> {
     }
     Some(RandomContent {
         kind: InspirationKind::Poetry,
-        title: field(data, "from", "无题"),
+        title: {
+            let mut title = field(data, "from", "无题");
+            while let Some(inner) = title.strip_prefix('《').and_then(|s| s.strip_suffix('》')) {
+                title = inner.trim().to_owned();
+            }
+            if title.is_empty() {
+                "无题".into()
+            } else {
+                title
+            }
+        },
         author: field(data, "from_who", "佚名"),
         content,
         source: "poetry".into(),
@@ -492,5 +584,61 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].content, "第一行\n第二行");
         assert_eq!(wrap("一二三四五", 6), "一二三\n四五");
+    }
+    #[test]
+    fn poetry_rate_limit_prevents_bursts_and_caps_every_rolling_minute() {
+        let base = Instant::now();
+        let mut limit = PoetryRateLimit::default();
+        let mut sent = Vec::new();
+        for step in 0..1800 {
+            let now = base + Duration::from_millis(step * 100);
+            if limit.try_acquire(now) {
+                sent.push(now);
+            }
+            assert!(
+                sent.iter()
+                    .filter(|time| now.duration_since(**time) < POETRY_RATE_WINDOW)
+                    .count()
+                    <= 60
+            );
+        }
+        assert!(sent.len() > 60, "old reservations must expire");
+        assert!(
+            sent.windows(2)
+                .all(|pair| pair[1].duration_since(pair[0]) >= POETRY_MIN_INTERVAL)
+        );
+    }
+    #[test]
+    fn poetry_429_cooldown_respects_retry_after_seconds_and_http_dates() {
+        let utc = chrono::DateTime::parse_from_rfc3339("2015-10-21T07:28:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(retry_after_delay(None, utc), Duration::from_secs(60));
+        assert_eq!(
+            retry_after_delay(Some("invalid"), utc),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            retry_after_delay(Some("120"), utc),
+            Duration::from_secs(120)
+        );
+        assert_eq!(
+            retry_after_delay(Some("Wed, 21 Oct 2015 07:30:00 GMT"), utc),
+            Duration::from_secs(120)
+        );
+        let base = Instant::now();
+        let mut limit = PoetryRateLimit::default();
+        assert!(limit.try_acquire(base));
+        limit.block_for(base, Duration::from_secs(120));
+        limit.block_for(base, Duration::from_secs(60)); // A shorter penalty must not clear a longer one.
+        assert!(!limit.try_acquire(base + Duration::from_secs(119)));
+        assert!(limit.try_acquire(base + Duration::from_secs(120)));
+    }
+    #[test]
+    fn documented_poetry_response_accepts_string_id_and_strips_title_brackets() {
+        let item = normalize_poetry(&json!({"id":"P100347","hitokoto":"床前明月光，疑是地上霜。","type":"i","from":"《静夜思》","from_who":"李白","dynasty":"唐代"})).unwrap();
+        assert_eq!(item.title, "静夜思");
+        assert!(item.print_text().ends_with("李白《静夜思》"));
+        assert!(!item.print_text().contains("《《"));
     }
 }

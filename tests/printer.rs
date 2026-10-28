@@ -200,6 +200,12 @@ async fn concurrent_commands_produce_unique_ordered_slips() {
     let notes = p.visible().await.unwrap();
     assert_eq!(notes.len(), 20);
     assert!(notes.windows(2).all(|pair| pair[0].seq < pair[1].seq));
+    assert!(notes.iter().all(|note| note.z_index > 1000));
+    assert!(
+        notes
+            .windows(2)
+            .all(|pair| pair[0].z_index < pair[1].z_index)
+    );
     assert_eq!(
         notes
             .iter()
@@ -256,6 +262,7 @@ async fn static_assets_are_embedded_and_paths_are_allowlisted() {
         "/",
         "/app.js",
         "/audio.js",
+        "/scrollbar.js",
         "/app.css",
         "/assets/space-mono.ttf",
         "/assets/concrete-wall.png",
@@ -277,6 +284,29 @@ async fn static_assets_are_embedded_and_paths_are_allowlisted() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+#[tokio::test]
+async fn new_print_is_persisted_above_previously_raised_notes() {
+    let p = printer().await;
+    let first = p.print(request("oldest")).await.unwrap();
+    p.print(request("another note")).await.unwrap();
+    p.update(
+        &first.id,
+        NotePatch {
+            z_index: Some(9000),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let latest = p.print(request("frontmost")).await.unwrap();
+    assert_eq!(latest.z_index, 9001);
+    let stored = p.visible().await.unwrap();
+    assert_eq!(
+        stored.iter().max_by_key(|note| note.z_index).unwrap().id,
+        latest.id
+    );
+}
+
 #[tokio::test]
 async fn note_response_round_trips_for_cli_clients() {
     let p = printer().await;

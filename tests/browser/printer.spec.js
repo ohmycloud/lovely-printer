@@ -59,6 +59,8 @@ test('HTTP and CLI print commands arrive live, queue once, and render plain text
   await expect(page.locator('.paper-position')).toHaveCount(2);
   expect(await page.evaluate(() => window.pwned)).toBeUndefined();
   expect(cli.source).toBe('cli');
+  expect(cli.z_index).toBeGreaterThan(a.z_index);
+  expect(Number(await page.locator(`[data-id="${cli.id}"]`).evaluate(el => el.style.zIndex))).toBeGreaterThan(Number(await page.locator(`[data-id="${a.id}"]`).evaluate(el => el.style.zIndex)));
 });
 
 test('closing a note archives it and history can restore or reprint it', async ({ page, request }) => {
@@ -278,6 +280,153 @@ test('both custom dropdowns always open below their trigger, with keyboard and m
   await expect(page.locator('#lyrics-query')).toBeVisible();
   await source.click(); await page.locator('#settings-title').click();
   await expect(page.locator('#inspiration-kind-options')).not.toBeVisible();
+});
+
+test('new notes appear above raised older notes while ejecting and after reload', async ({ page, request }) => {
+  const firstId = await (await printText(page, '第一张便签')).getAttribute('data-id');
+  await printText(page, '第二张便签');
+  const first = page.locator(`[data-id="${firstId}"]`);
+  await first.focus(); await first.press('ArrowRight');
+  const raisedZ = Number(await first.evaluate(el => el.style.zIndex));
+  await expect.poll(async () => (await (await request.get('/api/notes')).json()).find(n => n.id === firstId).z_index).toBe(raisedZ);
+  await page.locator('#input').fill('最新的便签应该在最上方'); await page.locator('#print').click();
+  const printing = page.locator('.paper-position.printing'); await expect(printing).toBeVisible();
+  const id = await printing.getAttribute('data-id');
+  expect(Number(await printing.evaluate(el => el.style.zIndex))).toBeGreaterThan(raisedZ);
+  await expect(page.locator('.paper-position.printing')).toHaveCount(0);
+  const latest = page.locator(`[data-id="${id}"]`);
+  const assertOnTop = async () => {
+    const layers = await page.locator('.paper-position').evaluateAll(elements => elements.map(el => ({ id: el.dataset.id, z: Number(el.style.zIndex) })));
+    expect(layers.find(note => note.id === id).z).toBeGreaterThan(Math.max(...layers.filter(note => note.id !== id).map(note => note.z)));
+    const box = await latest.boundingBox();
+    const hit = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('.paper-position')?.dataset.id, { x: box.x + box.width / 2, y: box.y + 80 });
+    expect(hit).toBe(id);
+  };
+  await assertOnTop();
+  await page.reload(); await expect(latest).toBeVisible(); await assertOnTop();
+});
+
+test('sound names are concise and every theme has a gray unfilled volume track', async ({ page }) => {
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await expect(page.locator('#sound-preset option')).toHaveText(['柔软气泡（默认）', '热敏打印机', '自定义音频']);
+  await expect(page.locator('#sound-preset-trigger')).toHaveText('柔软气泡（默认）');
+  await selectSetting(page, 'sound-preset', 'thermal');
+  await expect(page.locator('#sound-preset-trigger')).toHaveText('热敏打印机');
+  await page.getByRole('tab', { name: '主题配色' }).click();
+  await page.getByRole('button', { name: '晴空蓝', exact: true }).click();
+  await page.getByRole('tab', { name: '声音与设置', exact: true }).click();
+  const slider = page.locator('#volume');
+  await slider.evaluate(el => { el.value = '69'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await expect(page.locator('#volume-value')).toHaveText('69%');
+  expect(await slider.evaluate(el => el.style.getPropertyValue('--volume-fill'))).toBe('69%');
+  for (const theme of ['晴空蓝', '鼠尾草绿', '奶油复古']) {
+    await page.getByRole('tab', { name: '主题配色' }).click();
+    await page.getByRole('button', { name: theme, exact: true }).click();
+    await page.getByRole('tab', { name: '声音与设置', exact: true }).click();
+    const track = await slider.evaluate(el => ({ background: getComputedStyle(el).backgroundImage, empty: getComputedStyle(el).getPropertyValue('--slider-empty').trim() }));
+    expect(track.empty).toBe('#dedbd2');
+    expect(track.background).toContain('rgb(222, 219, 210) 69%, rgb(222, 219, 210) 100%');
+  }
+  await slider.press('Home'); await expect(slider).toHaveValue('0');
+  await slider.press('End'); await expect(slider).toHaveValue('100');
+  await expect(page.locator('#volume-value')).toHaveText('100%');
+});
+
+test('paper ejects flush with the machine edge at every animation stage and viewport', async ({ page }) => {
+  await page.locator('#input').fill('贴着打印机的上边缘，留住这个瞬间。\n'.repeat(12));
+  await page.locator('#print').click();
+  const printing = page.locator('.paper-position.printing'); await expect(printing).toBeVisible();
+  const id = await printing.getAttribute('data-id');
+  await printing.evaluate(el => el.querySelector('.paper-eject').getAnimations()[0].pause());
+  for (const size of [{ width: 1200, height: 800 }, { width: 390, height: 667 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(size);
+    await expect.poll(() => printing.evaluate(el => Math.abs(el.getBoundingClientRect().bottom - document.querySelector('#printer').getBoundingClientRect().top))).toBeLessThan(1);
+    for (const fraction of [.1, .5, .9]) {
+      const frame = await printing.evaluate(async (el, fraction) => {
+        const animation = el.querySelector('.paper-eject').getAnimations()[0];
+        animation.currentTime = animation.effect.getTiming().duration * fraction;
+        await new Promise(requestAnimationFrame);
+        const slot = document.querySelector('#printer').getBoundingClientRect().top;
+        const clip = el.getBoundingClientRect(), sheet = el.querySelector('.paper').getBoundingClientRect();
+        return { slot, clipBottom: clip.bottom, visibleBottom: Math.min(clip.bottom, sheet.bottom), visibleTop: sheet.top, rotation: getComputedStyle(el.querySelector('.paper')).transform };
+      }, fraction);
+      expect(Math.abs(frame.clipBottom - frame.slot)).toBeLessThan(1);
+      expect(Math.abs(frame.visibleBottom - frame.slot)).toBeLessThan(1);
+      expect(frame.visibleTop).toBeLessThan(frame.slot);
+      expect(frame.rotation).toBe('matrix(1, 0, 0, 1, 0, 0)');
+    }
+  }
+  await printing.evaluate(el => el.querySelector('.paper-eject').getAnimations()[0].finish());
+  await expect(page.locator('.paper-position.printing')).toHaveCount(0);
+  const paper = page.locator(`[data-id="${id}"] .paper`);
+  const final = await paper.boundingBox(), machine = await page.locator('#printer').boundingBox();
+  expect(Math.abs(final.y + final.height - machine.y)).toBeLessThan(1);
+});
+
+test('settings scrollbar is inset below fixed header and tabs, and tab switches reset only content', async ({ page }) => {
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  for (const size of [{ width: 1200, height: 800 }, { width: 390, height: 667 }, { width: 844, height: 390 }]) {
+    await page.setViewportSize(size);
+    await page.getByRole('tab', { name: '声音与设置', exact: true }).click();
+    const dialog = await page.locator('#settings-dialog').boundingBox();
+    const heading = await page.locator('#settings-dialog .dialog-heading').boundingBox();
+    const tabs = await page.locator('.settings-tabs').boundingBox();
+    const scroll = await page.locator('#settings-scroll').boundingBox();
+    expect(scroll.y).toBeGreaterThan(tabs.y + tabs.height + 8);
+    expect(scroll.y + scroll.height).toBeLessThan(dialog.y + dialog.height - 12);
+    expect(scroll.height).toBeLessThan(dialog.height - 100);
+    await page.locator('#settings-scroll').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    expect(await page.locator('#settings-scroll').evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    expect((await page.locator('#settings-dialog .dialog-heading').boundingBox()).y).toBeCloseTo(heading.y, 1);
+    expect((await page.locator('.settings-tabs').boundingBox()).y).toBeCloseTo(tabs.y, 1);
+    expect(await page.locator('#settings-dialog').evaluate(el => el.scrollTop)).toBe(0);
+    await page.getByRole('tab', { name: '主题配色' }).click();
+    expect(await page.locator('#settings-scroll').evaluate(el => el.scrollTop)).toBe(0);
+    await expect(page.locator('.theme-card').first()).toBeInViewport();
+  }
+});
+
+test('vertical scrollbar thumbs stay 12px high and support dragging, keyboard and native wheel scrolling', async ({ page }) => {
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  const scroller = page.locator('#settings-scroll');
+  const track = scroller.locator(':scope > .vertical-scrollbar');
+  const thumb = track.getByRole('scrollbar');
+  await expect(thumb).toBeVisible(); await expect(thumb).toHaveCSS('height', '12px');
+  const start = await thumb.boundingBox(), rail = await track.boundingBox();
+  await page.mouse.move(start.x + start.width / 2, start.y + 6);
+  await page.mouse.down(); await page.mouse.move(start.x + start.width / 2, rail.y + rail.height - 6, { steps: 8 }); await page.mouse.up();
+  await expect.poll(() => scroller.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
+  expect((await thumb.boundingBox()).height).toBe(12);
+  await thumb.press('Home'); expect(await scroller.evaluate(el => el.scrollTop)).toBe(0);
+  await thumb.press('End'); await expect.poll(() => scroller.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
+  await thumb.press('Home'); await scroller.hover(); await page.mouse.wheel(0, 100);
+  await expect.poll(() => scroller.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await page.locator('#input').fill('长文本与固定高度滚动滑块。\n'.repeat(60));
+  const inputThumb = page.locator('.screen > .vertical-scrollbar').getByRole('scrollbar');
+  await expect(inputThumb).toBeVisible(); await expect(inputThumb).toHaveCSS('height', '12px');
+  await inputThumb.press('End');
+  await expect.poll(() => page.locator('#input').evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
+  await page.locator('#input').fill('短句'); await expect(inputThumb).not.toBeVisible();
+});
+
+test('dynamically loaded history and overflowing dropdowns use the same 12px scrollbar thumbs', async ({ page }) => {
+  await page.route('**/api/notes?limit=20&offset=0', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify([1, 2, 3].map(n => ({ id: `history-${n}`, text: '历史长便签，保留原生滚动。\n'.repeat(40), source: 'test', created_at: new Date().toISOString(), archived: true }))) }));
+  await page.getByRole('button', { name: '打印历史', exact: true }).click();
+  await expect(page.locator('.history-item')).toHaveCount(3);
+  const historyThumb = page.locator('#history-dialog > .vertical-scrollbar').getByRole('scrollbar');
+  await expect(historyThumb).toBeVisible(); await expect(historyThumb).toHaveCSS('height', '12px');
+  const textThumb = page.locator('.history-item p > .vertical-scrollbar').first().getByRole('scrollbar');
+  await expect(textThumb).toBeVisible(); await expect(textThumb).toHaveCSS('height', '12px');
+  await page.getByRole('button', { name: '关闭历史' }).click();
+  await page.getByRole('button', { name: '声音与设置', exact: true }).click();
+  await page.locator('#inspiration-kind-trigger').click();
+  const menu = page.locator('#inspiration-kind-options');
+  await menu.evaluate(el => { el.style.maxHeight = '50px'; });
+  const menuThumb = menu.locator(':scope > .vertical-scrollbar').getByRole('scrollbar');
+  await expect(menuThumb).toBeVisible(); await expect(menuThumb).toHaveCSS('height', '12px');
+  await menuThumb.press('End');
+  await expect.poll(() => menu.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
 });
 
 test('failed print preserves input and reports an error', async ({ page }) => {

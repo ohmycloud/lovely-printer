@@ -25,6 +25,8 @@ export function enhanceSelects(selects) {
     menu.setAttribute('role', 'listbox'); menu.setAttribute('aria-labelledby', label?.id || trigger.id);
     menu.setAttribute('popover', 'manual'); menu.hidden = true; wrapper.append(menu);
     trigger.setAttribute('aria-controls', menu.id);
+    const dialog = select.closest('dialog');
+    const scroller = select.closest('.settings-scroll') || dialog;
     let active = 0, isOpen = false;
     const options = [...select.options].map((option, index) => {
       const button = document.createElement('button'); button.type = 'button'; button.tabIndex = -1;
@@ -49,16 +51,16 @@ export function enhanceSelects(selects) {
       let rect = trigger.getBoundingClientRect();
       const viewport = window.visualViewport?.height || innerHeight;
       const desired = Math.min(options.length * 39 + 10, viewport - 40);
-      const dialog = select.closest('dialog');
-      const overflow = rect.bottom + 6 + desired - (viewport - 12);
+      const lowerEdge = Math.min(viewport - 12, dialog ? dialog.getBoundingClientRect().bottom - 12 : viewport - 12);
+      const overflow = rect.bottom + 6 + desired - lowerEdge;
       // Make room below instead of flipping the listbox above its trigger.
-      if (allowScroll && dialog && overflow > 0) {
-        dialog.scrollTop += overflow;
+      if (allowScroll && scroller && overflow > 0) {
+        scroller.scrollTop += overflow;
         rect = trigger.getBoundingClientRect();
       }
       menu.style.left = `${rect.left}px`; menu.style.top = `${rect.bottom + 6}px`;
       menu.style.width = `${rect.width}px`;
-      menu.style.maxHeight = `${Math.max(36, viewport - rect.bottom - 18)}px`;
+      menu.style.maxHeight = `${Math.max(36, lowerEdge - rect.bottom - 6)}px`;
     }
     function close(focus = false) {
       if (!isOpen) return;
@@ -101,9 +103,8 @@ export function enhanceSelects(selects) {
       }
     });
     select.addEventListener('change', sync);
-    const dialog = select.closest('dialog');
     dialog?.addEventListener('close', () => close());
-    dialog?.addEventListener('scroll', () => { if (isOpen) position(); });
+    scroller?.addEventListener('scroll', () => { if (isOpen) position(); });
     controls.push(control); sync();
   }
   document.addEventListener('pointerdown', event => {

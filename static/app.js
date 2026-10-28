@@ -1,10 +1,12 @@
 import { PrinterAudio } from './audio.js';
 import { enhanceSelects } from './select.js';
+import { enhanceScrollbars } from './scrollbar.js';
 import { THEMES, COLOR_FIELDS, sanitizeAppearance, themeColors, applyTheme } from './themes.js';
 
 const $ = (selector) => document.querySelector(selector);
 const input = $('#input'), printButton = $('#print'), papers = $('#papers');
 const dropdowns = enhanceSelects(document.querySelectorAll('#settings-dialog select'));
+enhanceScrollbars();
 const defaults = { volume: .6, muted: false, preset: 'puff', typingSound: true, kind: 'love', reducedMotion: false };
 let saved = {};
 try { saved = JSON.parse(localStorage.getItem('motopager-settings') || '{}'); } catch {}
@@ -17,7 +19,7 @@ applyTheme(settings);
 const audio = new PrinterAudio(settings);
 let inputSource = 'web';
 const notes = new Map(), seen = new Set(), queue = [];
-let active = null, submitting = false, generating = false, highestZ = 1001, toastTimer;
+let active = null, submitting = false, generating = false, highestZ = 1000, toastTimer;
 let ready = false, historyOffset = 0, historyLoading = false, historyGeneration = 0;
 const reducedMotion = () => settings.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches;
 function saveSettings() {
@@ -119,7 +121,7 @@ function makePaper(note) {
   const end = document.createElement('span'); end.textContent = settings.paperFooterText;
   footer.append(barcode, end); paper.append(close, header, text, footer); eject.append(paper); position.append(eject); papers.append(position);
   const item = { note, el: position, paper, eject, height: paper.offsetHeight, scale: 1, dragging: false, printing: false, z: note.z_index > 1 ? note.z_index : Math.min(999, note.seq + 1) };
-  notes.set(note.id, item); seen.add(note.id);
+  notes.set(note.id, item); seen.add(note.id); highestZ = Math.max(highestZ, item.z);
   close.addEventListener('pointerdown', event => event.stopPropagation());
   close.addEventListener('click', async (event) => {
     event.stopPropagation(); close.disabled = true;
@@ -138,7 +140,8 @@ function layoutDevice() {
 function layoutPaper(item) {
   const { note, el, height } = item;
   const bounds = $('#printer').getBoundingClientRect();
-  const angle = note.rotation * Math.PI / 180;
+  const rotation = item.printing ? 0 : note.rotation;
+  const angle = rotation * Math.PI / 180;
   const rotatedW = Math.abs(320 * Math.cos(angle)) + Math.abs(height * Math.sin(angle));
   const rotatedH = Math.abs(height * Math.cos(angle)) + Math.abs(320 * Math.sin(angle));
   const top = 58, gap = Math.max(60, bounds.top - top - 14);
@@ -146,7 +149,9 @@ function layoutPaper(item) {
   const w = 320 * item.scale, h = height * item.scale;
   const inset = 12 + Math.abs(Math.sin(angle)) * Math.max(w, h) / 2;
   let x = note.x ?? ((innerWidth - w) / 2 + ((note.seq % 3) - 1) * 12);
-  let y = note.y ?? (bounds.top - h - 12);
+  // Anchor the sheet's rotated bottom edge directly to the machine's top.
+  // During ejection the sheet is straight, so the clipping box ends at the slot.
+  let y = note.y ?? (bounds.top - (h + rotatedH * item.scale) / 2);
   x = Math.max(inset, Math.min(innerWidth - w - inset, x));
   y = Math.max(top + inset / 2, Math.min($('#canvas').clientHeight - h - inset, y));
   Object.assign(item, { x, y });
@@ -154,7 +159,7 @@ function layoutPaper(item) {
   el.style.left = `${x}px`; el.style.top = `${y}px`;
   el.style.transform = `scale(${item.scale})`;
   el.style.zIndex = item.z;
-  item.paper.style.transform = `rotate(${note.rotation}deg)`;
+  item.paper.style.transform = `rotate(${rotation}deg)`;
 }
 function enqueue(note) {
   if (seen.has(note.id) || note.archived) return;
@@ -163,9 +168,13 @@ function enqueue(note) {
 async function processQueue() {
   if (active || !queue.length) return;
   const note = queue.shift();
-  const item = makePaper(note); active = item; item.printing = true;
-  // Position from the actual measured slot rather than a guessed device height.
-  item.note.x = null; item.note.y = null; item.z = Math.min(999, note.seq + 1); layoutPaper(item);
+  // Include local drags that may not have reached the server yet. The backend
+  // already allocates a frontmost persisted z_index for ordinary print commands.
+  const printZ = Math.max(note.z_index, highestZ + 1);
+  const item = makePaper({ ...note, z_index: printZ }); active = item; item.printing = true;
+  if (printZ !== note.z_index) patch(note.id, { z_index: printZ }).catch(error => toast(`便签层级尚未保存：${error.message}`));
+  // The clipping box keeps ejection above the slot even on a foreground layer.
+  item.note.x = null; item.note.y = null; layoutPaper(item);
   item.el.classList.add('printing'); item.el.setAttribute('aria-busy', 'true');
   item.el.style.clipPath = 'inset(-12px -24px 0 -24px)';
   $('#screen-led').classList.add('busy'); printButton.classList.add('printing');
@@ -174,7 +183,7 @@ async function processQueue() {
   const stopAudio = audio.print(duration || 300); item.stopAudio = stopAudio;
   if (duration) {
     const animation = item.eject.animate([
-      { transform: `translateY(${item.height + 12}px)` },
+      { transform: `translateY(${item.height}px)` },
       { transform: 'translateY(0)' }
     ], { duration, easing: 'linear', fill: 'forwards' });
     item.animation = animation;
@@ -184,6 +193,7 @@ async function processQueue() {
   // Let the short cutter sound finish, then release references to completed audio nodes.
   setTimeout(() => { stopAudio(); item.stopAudio = null; }, 180);
   item.printing = false; item.el.classList.remove('printing'); item.el.removeAttribute('aria-busy'); item.el.style.clipPath = '';
+  layoutPaper(item);
   $('#screen-led').classList.remove('busy'); printButton.classList.remove('printing');
   $('#hint').textContent = settings.footerText;
   active = null; processQueue();
@@ -330,6 +340,7 @@ function selectSettingsTab(selected) {
     const tab = $(`#${name}-tab`); const isSelected = name === selected;
     tab.setAttribute('aria-selected', String(isSelected)); tab.tabIndex = isSelected ? 0 : -1; $(`#${name}-panel`).hidden = !isSelected;
   }
+  $('#settings-scroll').scrollTop = 0;
 }
 for (const name of ['sound', 'appearance']) {
   $(`#${name}-tab`).onclick = () => selectSettingsTab(name);
@@ -343,6 +354,7 @@ for (const name of ['sound', 'appearance']) {
 renderAppearanceUI(); updateAppearanceText();
 function updateSoundUI() {
   $('#volume').value = settings.volume * 100; $('#volume-value').value = `${Math.round(settings.volume * 100)}%`;
+  $('#volume').style.setProperty('--volume-fill', `${settings.volume * 100}%`);
   $('#sound-preset').value = settings.preset; $('#typing-sound').checked = settings.typingSound;
   $('#reduced-motion').checked = settings.reducedMotion; $('#inspiration-kind').value = settings.kind;
   $('#lyrics-query-field').hidden = settings.kind !== 'lyrics';
