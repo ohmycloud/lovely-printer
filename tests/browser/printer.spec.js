@@ -386,17 +386,17 @@ test('settings scrollbar is inset below fixed header and tabs, and tab switches 
   }
 });
 
-test('vertical scrollbar thumbs stay 12px high and support dragging, keyboard and native wheel scrolling', async ({ page }) => {
+test('scrollbar thumbs are 24px outside the printer and remain 12px inside, with drag, keyboard and wheel support', async ({ page }) => {
   await page.getByRole('button', { name: '声音与设置', exact: true }).click();
   const scroller = page.locator('#settings-scroll');
   const track = scroller.locator(':scope > .vertical-scrollbar');
   const thumb = track.getByRole('scrollbar');
-  await expect(thumb).toBeVisible(); await expect(thumb).toHaveCSS('height', '12px');
+  await expect(thumb).toBeVisible(); await expect(thumb).toHaveCSS('height', '24px');
   const start = await thumb.boundingBox(), rail = await track.boundingBox();
-  await page.mouse.move(start.x + start.width / 2, start.y + 6);
-  await page.mouse.down(); await page.mouse.move(start.x + start.width / 2, rail.y + rail.height - 6, { steps: 8 }); await page.mouse.up();
+  await page.mouse.move(start.x + start.width / 2, start.y + 12);
+  await page.mouse.down(); await page.mouse.move(start.x + start.width / 2, rail.y + rail.height - 12, { steps: 8 }); await page.mouse.up();
   await expect.poll(() => scroller.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
-  expect((await thumb.boundingBox()).height).toBe(12);
+  expect((await thumb.boundingBox()).height).toBe(24);
   await thumb.press('Home'); expect(await scroller.evaluate(el => el.scrollTop)).toBe(0);
   await thumb.press('End'); await expect.poll(() => scroller.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
   await thumb.press('Home'); await scroller.hover(); await page.mouse.wheel(0, 100);
@@ -410,21 +410,21 @@ test('vertical scrollbar thumbs stay 12px high and support dragging, keyboard an
   await page.locator('#input').fill('短句'); await expect(inputThumb).not.toBeVisible();
 });
 
-test('dynamically loaded history and overflowing dropdowns use the same 12px scrollbar thumbs', async ({ page }) => {
+test('dynamically loaded history and overflowing dropdowns use 24px scrollbar thumbs', async ({ page }) => {
   await page.route('**/api/notes?limit=20&offset=0', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify([1, 2, 3].map(n => ({ id: `history-${n}`, text: '历史长便签，保留原生滚动。\n'.repeat(40), source: 'test', created_at: new Date().toISOString(), archived: true }))) }));
   await page.getByRole('button', { name: '打印历史', exact: true }).click();
   await expect(page.locator('.history-item')).toHaveCount(3);
   const historyThumb = page.locator('#history-dialog > .vertical-scrollbar').getByRole('scrollbar');
-  await expect(historyThumb).toBeVisible(); await expect(historyThumb).toHaveCSS('height', '12px');
+  await expect(historyThumb).toBeVisible(); await expect(historyThumb).toHaveCSS('height', '24px');
   const textThumb = page.locator('.history-item p > .vertical-scrollbar').first().getByRole('scrollbar');
-  await expect(textThumb).toBeVisible(); await expect(textThumb).toHaveCSS('height', '12px');
+  await expect(textThumb).toBeVisible(); await expect(textThumb).toHaveCSS('height', '24px');
   await page.getByRole('button', { name: '关闭历史' }).click();
   await page.getByRole('button', { name: '声音与设置', exact: true }).click();
   await page.locator('#inspiration-kind-trigger').click();
   const menu = page.locator('#inspiration-kind-options');
   await menu.evaluate(el => { el.style.maxHeight = '50px'; });
   const menuThumb = menu.locator(':scope > .vertical-scrollbar').getByRole('scrollbar');
-  await expect(menuThumb).toBeVisible(); await expect(menuThumb).toHaveCSS('height', '12px');
+  await expect(menuThumb).toBeVisible(); await expect(menuThumb).toHaveCSS('height', '24px');
   await menuThumb.press('End');
   await expect.poll(() => menu.evaluate(el => Math.abs(el.scrollHeight - el.clientHeight - el.scrollTop))).toBeLessThan(1);
 });

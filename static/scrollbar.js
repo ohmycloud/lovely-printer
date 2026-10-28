@@ -1,5 +1,5 @@
 // Native scrollbar thumbs are proportional to content; CSS cannot fix their
-// height. Keep native scrolling and overlay a 12px thumb on each scroll area.
+// height. Keep native scrolling; the printer thumb is 12px, all others 24px.
 export function enhanceScrollbars(root = document) {
   const selector = '#input, #settings-scroll, #history-dialog, .history-item p, .select-menu';
   const instances = new Map();
@@ -14,7 +14,9 @@ export function enhanceScrollbars(root = document) {
     if (getComputedStyle(host).position === 'static') host.style.position = 'relative';
     scroller.classList.add('custom-scrollbar-native');
     scroller.id ||= `scroll-content-${++sequence}`;
+    const thumbHeight = external ? 12 : 24;
     const track = document.createElement('div'); track.className = 'vertical-scrollbar';
+    track.style.setProperty('--scrollbar-thumb-height', `${thumbHeight}px`);
     const thumb = document.createElement('div'); thumb.className = 'vertical-scrollbar-thumb';
     thumb.tabIndex = 0; thumb.setAttribute('role', 'scrollbar');
     thumb.setAttribute('aria-label', '垂直滚动条');
@@ -22,11 +24,11 @@ export function enhanceScrollbars(root = document) {
     thumb.setAttribute('aria-controls', scroller.id);
     thumb.setAttribute('aria-valuemin', '0');
     track.append(thumb); host.append(track);
-    let trackHeight = 0, dragging = false, grab = 6;
+    let trackHeight = 0, dragging = false, grab = thumbHeight / 2;
     function update() {
       const maximum = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       trackHeight = Math.max(0, scroller.clientHeight - 4);
-      track.hidden = maximum <= 1 || trackHeight < 12;
+      track.hidden = maximum <= 1 || trackHeight < thumbHeight;
       if (track.hidden) return;
       // An internal overlay follows scrollTop so it stays at the viewport edge,
       // without adding to scrollHeight. Textareas use an external sibling.
@@ -35,17 +37,17 @@ export function enhanceScrollbars(root = document) {
       track.style.top = `${top + 2}px`;
       track.style.left = `${left + scroller.clientWidth - 8}px`;
       track.style.height = `${trackHeight}px`;
-      const travel = trackHeight - 12;
+      const travel = trackHeight - thumbHeight;
       thumb.style.transform = `translateY(${travel * Math.min(1, scroller.scrollTop / maximum)}px)`;
       thumb.setAttribute('aria-valuemax', String(maximum));
       thumb.setAttribute('aria-valuenow', String(Math.round(scroller.scrollTop)));
     }
     function move(event) {
       const bounds = track.getBoundingClientRect();
-      if (!bounds.height || trackHeight <= 12) return;
+      if (!bounds.height || trackHeight <= thumbHeight) return;
       // Convert pointer coordinates back to CSS pixels for the scaled printer.
       const y = (event.clientY - bounds.top) * trackHeight / bounds.height;
-      const ratio = Math.max(0, Math.min(1, (y - grab) / (trackHeight - 12)));
+      const ratio = Math.max(0, Math.min(1, (y - grab) / (trackHeight - thumbHeight)));
       scroller.scrollTop = ratio * (scroller.scrollHeight - scroller.clientHeight);
       update();
     }
@@ -53,7 +55,7 @@ export function enhanceScrollbars(root = document) {
       if (event.button !== 0) return;
       event.preventDefault(); update();
       const bounds = track.getBoundingClientRect();
-      grab = event.target === thumb ? (event.clientY - thumb.getBoundingClientRect().top) * trackHeight / bounds.height : 6;
+      grab = event.target === thumb ? (event.clientY - thumb.getBoundingClientRect().top) * trackHeight / bounds.height : thumbHeight / 2;
       dragging = true; track.setPointerCapture(event.pointerId);
       thumb.focus({ preventScroll: true }); move(event);
     });
