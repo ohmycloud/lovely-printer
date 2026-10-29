@@ -24,10 +24,11 @@ async fn mock_server() -> (String, Arc<AtomicUsize>, tokio::task::JoinHandle<()>
     let rate_count = calls.clone();
     let app = Router::new()
         .route("/poetry", get(|Query(q): Query<HashMap<String,String>>| async move {
-            assert_eq!(q.get("type").map(String::as_str), Some("i"));
+            assert_eq!(q.get("c").map(String::as_str), Some("i"));
+            assert!(!q.contains_key("type"));
             assert_eq!(q.get("encode").map(String::as_str), Some("json"));
             assert_eq!(q.get("max_length").map(String::as_str), Some("30"));
-            Json(json!({"hitokoto":" 床前明月光，\r\n疑是地上霜。 ", "from":"静夜思", "from_who":"李白"}))
+            Json(json!({"id":6470, "uuid":"c3ab7e10-5de4-403e-9e55-c0b0366a1c60", "type":"i", "hitokoto":" 床前明月光，\r\n疑是地上霜。 ", "from":"静夜思", "from_who":"李白"}))
         }))
         .route("/lyrics", get(move |Query(q): Query<HashMap<String,String>>| {
             let count = count.clone();

@@ -19,7 +19,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const POETRY_RATE_WINDOW: Duration = Duration::from_secs(60);
 const POETRY_RATE_MAX: usize = 60;
-// Leave a small safety margin below the documented 60 requests/minute.
+// Keep upstream traffic conservative, including when using custom mirrors.
 const POETRY_MIN_INTERVAL: Duration = Duration::from_millis(1100);
 
 #[derive(Default)]
@@ -121,8 +121,7 @@ pub struct RandomContentService {
 impl RandomContentService {
     pub fn configured(love: Arc<dyn InspirationProvider>) -> Self {
         Self::new(
-            std::env::var("POETRY_API_URL")
-                .unwrap_or_else(|_| "https://www.rddh.cn/api/hitokoto".into()),
+            std::env::var("POETRY_API_URL").unwrap_or_else(|_| "https://v1.hitokoto.cn/".into()),
             std::env::var("LYRICS_API_URL")
                 .unwrap_or_else(|_| "https://lrclib.net/api/search".into()),
             love,
@@ -293,7 +292,7 @@ impl RandomContentService {
     ) -> Result<Vec<RandomContent>, Box<dyn std::error::Error + Send + Sync>> {
         let request = match key.kind {
             InspirationKind::Poetry => self.client.get(&self.poetry_url).query(&[
-                ("type", "i"),
+                ("c", "i"),
                 ("encode", "json"),
                 ("max_length", "30"),
             ]),
@@ -368,8 +367,8 @@ fn field(data: &serde_json::Value, key: &str, fallback: &str) -> String {
         .collect()
 }
 fn normalize_poetry(data: &serde_json::Value) -> Option<RandomContent> {
-    // RDDH currently serves this id=0 default even with cache-busting requests.
-    // It is not a random poem; do not cache or relabel it as one.
+    // Legacy RDDH mirrors may return this fixed fallback instead of a poem.
+    // Do not cache or relabel it as a random poem.
     if data.get("id").and_then(|v| v.as_i64()) == Some(0)
         && data.get("from").and_then(|v| v.as_str()) == Some("名言警句")
     {
